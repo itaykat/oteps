@@ -12,45 +12,60 @@ scenarios such as [multivariate time-series](#multivariate-time-series), large b
 
 ## Table of contents
 
-* [Introduction](#introduction)
-  * [Motivation](#motivation)
-  * [Validation](#validation)
-  * [Why Apache Arrow and How to Use It?](#why-apache-arrow-and-how-to-use-it)
-  * [Integration Strategy and Phasing](#integration-strategy-and-phasing)
-* [Protocol Details](#protocol-details)
-  * [EventStream Service](#eventstream-service)
-  * [Mapping OTEL Entities to Arrow Records](#mapping-otel-entities-to-arrow-records)
-    * [Label/Attribute Representation](#labelattribute-representation)
-    * [Metrics Payload](#metrics-payload)
-    * [Logs Payload](#logs-payload)
-    * [Spans Payload](#spans-payload)
-* [Implementation Recommendations](#implementation-recommendations)
-  * [Protocol Extension and Fallback Mechanism](#protocol-extension-and-fallback-mechanism)
-  * [Batch ID Generation](#batch-id-generation)
-  * [Substream ID Generation](#substream-id-generation)
-  * [Schema ID Generation](#schema-id-generation)
-  * [Traffic Balancing Optimization](#traffic-balancing-optimization)
-  * [Throttling](#throttling)
-  * [Best Effort Delivery Guarantee](#best-effort-delivery-guarantee)
-* [Risks and Mitigation](#risks-and-mitigations)
-* [Trade-offs and Mitigations](#trade-offs-and-mitigations)
-  * [Duplicate Data](#duplicate-data)
-  * [Incompatible Backends](#incompatible-backends)
-  * [Small Devices/Small Telemetry Data Stream](#small-devicessmall-telemetry-data-stream)
-* [Future Versions and Interoperability](#future-versions-and-interoperability)
-* [Prior Art and Alternatives](#prior-art-and-alternatives)
-* [Open Questions](#open-questions)
-* [Appendix A - Protocol Buffer Definitions](#appendix-a---protocol-buffer-definitions)
-* [Appendix B - Performance Benchmarks](#appendix-b---performance-benchmarks)
-* [Appendix C - Parameter Tuning and Design Optimization](#appendix-c---parameter-tuning-and-design-optimization)
-* [Appendix C - Schema Examples](#appendix-d---schema-examples)
-  * [Example of Schema for a Univariate Time-series](#example-of-schema-for-a-univariate-time-series)
-  * [Example of Schema for a Multivariate Time-series](#example-of-schema-for-a-multivariate-time-series)
-  * [Example of Schema for a GCP Log with JSON Payload](#example-of-schema-for-a-gcp-log-with-json-payload)
-  * [Example of Schema for a GCP Log with Proto Payload](#example-of-schema-for-a-gcp-log-with-proto-payload)
-  * [Example of Schema for a GCP Log with Text Payload](#example-of-schema-for-a-gcp-log-with-text-payload)
-* [Glossary](#glossary)
-* [Acknowledgements](#acknowledgements)
+- [OTLP Arrow Protocol Specification](#otlp-arrow-protocol-specification)
+  - [Table of contents](#table-of-contents)
+  - [Introduction](#introduction)
+    - [Motivation](#motivation)
+    - [Validation](#validation)
+    - [Why Apache Arrow and How to Use It?](#why-apache-arrow-and-how-to-use-it)
+    - [Integration Strategy and Phasing](#integration-strategy-and-phasing)
+      - [Phase 1](#phase-1)
+      - [Phase 2](#phase-2)
+  - [Protocol Details](#protocol-details)
+    - [EventStream Service](#eventstream-service)
+    - [Mapping OTEL Entities to Arrow Records](#mapping-otel-entities-to-arrow-records)
+      - [Label/Attribute Representation](#labelattribute-representation)
+      - [Metrics Payload](#metrics-payload)
+      - [Logs Payload](#logs-payload)
+      - [Spans Payload](#spans-payload)
+  - [Implementation Recommendations](#implementation-recommendations)
+    - [Protocol Extension and Fallback Mechanism](#protocol-extension-and-fallback-mechanism)
+    - [Batch ID Generation](#batch-id-generation)
+    - [Substream ID Generation](#substream-id-generation)
+    - [Schema ID Generation](#schema-id-generation)
+    - [Traffic Balancing Optimization](#traffic-balancing-optimization)
+    - [Throttling](#throttling)
+    - [Best Effort Delivery Guarantee](#best-effort-delivery-guarantee)
+  - [Risks and Mitigations](#risks-and-mitigations)
+  - [Trade-offs and Mitigations](#trade-offs-and-mitigations)
+    - [Duplicate Data](#duplicate-data)
+    - [Incompatible Backends](#incompatible-backends)
+    - [Small Devices/Small Telemetry Data Stream](#small-devicessmall-telemetry-data-stream)
+  - [Future Versions and Interoperability](#future-versions-and-interoperability)
+  - [Prior Art and Alternatives](#prior-art-and-alternatives)
+  - [Open Questions](#open-questions)
+  - [Appendix A - Protocol Buffer Definitions](#appendix-a---protocol-buffer-definitions)
+  - [Appendix B - Performance Benchmarks](#appendix-b---performance-benchmarks)
+    - [Metrics](#metrics)
+      - [Batch Size Analysis](#batch-size-analysis)
+      - [Serialization/Compression Time Analysis](#serializationcompression-time-analysis)
+    - [Logs](#logs)
+      - [Batch Size Analysis](#batch-size-analysis-1)
+      - [Serialization/Compression Time Analysis](#serializationcompression-time-analysis-1)
+    - [Traces](#traces)
+    - [Dataset Requirements](#dataset-requirements)
+  - [Appendix C - Parameter Tuning and Design Optimization](#appendix-c---parameter-tuning-and-design-optimization)
+  - [Appendix D - Schema Examples](#appendix-d---schema-examples)
+    - [Example of Schema for a Univariate Time-series](#example-of-schema-for-a-univariate-time-series)
+    - [Example of Schema for a Multivariate Time-series](#example-of-schema-for-a-multivariate-time-series)
+    - [Example of Schema for a GCP Log with JSON Payload](#example-of-schema-for-a-gcp-log-with-json-payload)
+    - [Example of Schema for a GCP Log with Proto Payload](#example-of-schema-for-a-gcp-log-with-proto-payload)
+    - [Example of Schema for a GCP Log with Text Payload](#example-of-schema-for-a-gcp-log-with-text-payload)
+  - [Glossary](#glossary)
+    - [Arrow Dictionary](#arrow-dictionary)
+    - [Arrow IPC Format](#arrow-ipc-format)
+    - [Multivariate Time-series](#multivariate-time-series)
+  - [Acknowledgements](#acknowledgements)
 
 ## Introduction
 
@@ -1131,7 +1146,6 @@ In order to have a realistic benchmark we need a dedicated dataset for the diffe
      - High cardinality field values - Traces with very high variations of field values
        - Note: Some of the limitation of existing tests is the use of dictionaries which have limit on the type of keys used
      - Variation not only in the attribute value but also in the number of attributes
-
 ## Appendix C - Parameter Tuning and Design Optimization
 
 This section describes the systematic approach used to optimize the Arrow OTLP design and its parameters. The approach
@@ -1145,21 +1159,21 @@ article [Optimize your applications using Google Vertex AI Vizier](https://cloud
 In this analysis, the function to optimize is the compression ratio for a set of parameters. We will focus on optimizing
 the protocol design for logs (the same approach has been applied for metrics). The parameters explored are:
 
-- compression algorithm (Zlib, Zstd, and Lz4)
-- serialization mode
-  - normalized: resources, instrumentation libraries, metrics, logs, traces, events, and links are mapped in a
-    dedicated
-    RecordBatch. A set of primary and secondary keys are used to recreate the relationships between these different
-    entities.
-  - denormalized: resource, instrumentation library, event, and link fields are replicated for every metrics, logs,
-    and traces.
-- dictionary configuration
-  - min_row_count: The creation of a dictionary will be performed only on columns with more than `min_row_count`
-    elements.
-  - max_card: The creation of a dictionary will be performed only on columns with a cardinality lower than `max_card`.
-  - max_card_ratio: The creation of a dictionary will only be performed on columns with a ratio `card` / `size` <= `max_card_ratio`.
-  - max_sorted: Maximum number of sorted dictionaries (based on cardinality/total_size and avg_data_length).
-- batch_size: Size of the batch before serialization and compression.
+* compression algorithm (Zlib, Zstd, and Lz4)
+* serialization mode
+  * normalized: resources, instrumentation libraries, metrics, logs, traces, events, and links are mapped in a
+  dedicated
+  RecordBatch. A set of primary and secondary keys are used to recreate the relationships between these different
+  entities.
+  * denormalized: resource, instrumentation library, event, and link fields are replicated for every metrics, logs,
+  and traces.
+* dictionary configuration
+  * min_row_count: The creation of a dictionary will be performed only on columns with more than `min_row_count`
+  elements.
+  * max_card: The creation of a dictionary will be performed only on columns with a cardinality lower than `max_card`.
+  * max_card_ratio: The creation of a dictionary will only be performed on columns with a ratio `card` / `size` <= `max_card_ratio`.
+  * max_sorted: Maximum number of sorted dictionaries (based on cardinality/total_size and avg_data_length).
+* batch_size: Size of the batch before serialization and compression.
 
 The following parallel coordinates chart represents the execution of 200 trials selected by Google AI Vizier in order to
 optimize the compression ratio per batch.
@@ -1173,13 +1187,13 @@ parameters for the log system in OTLP Arrow. This is represented by the followin
 
 From this analysis, we can conclude that for the tested data, the best parameters are:
 
-- compression_algorithm -> Zstd
-- serialization_mode -> Denormalized (mode used in the benchmark appendix)
-- min_row_count -> 25 logs
-- max_card -> 255 distinct values
-- max_card_ratio -> 0.22
-- max_sorted -> 13 sorted dictionaries
-- batch size -> 50K logs
+* compression_algorithm -> Zstd
+* serialization_mode -> Denormalized (mode used in the benchmark appendix)
+* min_row_count -> 25 logs
+* max_card -> 255 distinct values
+* max_card_ratio -> 0.22
+* max_sorted -> 13 sorted dictionaries
+* batch size -> 50K logs
 
 ## Appendix D - Schema Examples
 
@@ -1203,7 +1217,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "method",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 0,
@@ -1212,7 +1229,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "remote_address",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 1,
@@ -1226,7 +1246,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "state",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 3,
@@ -1235,7 +1258,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "url",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 4,
@@ -1251,7 +1277,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "name",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 5,
@@ -1260,7 +1289,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "version",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 6,
@@ -1291,7 +1323,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "host",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 7,
@@ -1300,7 +1335,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "instance_id",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 8,
@@ -1309,7 +1347,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "service_name",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 9,
@@ -1345,7 +1386,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "method",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 0,
@@ -1354,7 +1398,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "remote_address",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 1,
@@ -1367,7 +1414,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "url",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 3,
@@ -1383,7 +1433,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "name",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 4,
@@ -1392,7 +1445,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "version",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 5,
@@ -1451,7 +1507,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "host",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 6,
@@ -1460,7 +1519,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "instance_id",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 7,
@@ -1469,7 +1531,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "service_name",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 8,
@@ -1501,7 +1566,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
     {
       "name": "name",
       "data_type": {
-        "Dictionary": ["UInt8", "Utf8"]
+        "Dictionary": [
+          "UInt8",
+          "Utf8"
+        ]
       },
       "nullable": true,
       "dict_id": 17,
@@ -1510,7 +1578,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
     {
       "name": "severity_text",
       "data_type": {
-        "Dictionary": ["UInt8", "Utf8"]
+        "Dictionary": [
+          "UInt8",
+          "Utf8"
+        ]
       },
       "nullable": true,
       "dict_id": 24,
@@ -1527,7 +1598,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "compute.googleapis.com/resource_id",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 0,
@@ -1536,7 +1610,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "compute.googleapis.com/resource_name",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 1,
@@ -1545,7 +1622,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "compute.googleapis.com/resource_type",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 2,
@@ -1554,7 +1634,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "dataflow.googleapis.com/job_id",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 3,
@@ -1563,7 +1646,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "dataflow.googleapis.com/job_name",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 4,
@@ -1572,7 +1658,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "dataflow.googleapis.com/log_type",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 5,
@@ -1581,7 +1670,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "dataflow.googleapis.com/region",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 6,
@@ -1594,7 +1686,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "receiveTimestamp",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 8,
@@ -1610,7 +1705,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "job",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 9,
@@ -1619,7 +1717,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "logger",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 10,
@@ -1632,7 +1733,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "stage",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 12,
@@ -1641,7 +1745,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "step",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 13,
@@ -1658,7 +1765,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "worker",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 16,
@@ -1678,7 +1788,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "job_id",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 18,
@@ -1687,7 +1800,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "job_name",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 19,
@@ -1696,7 +1812,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "project_id",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 20,
@@ -1705,7 +1824,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "region",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 21,
@@ -1714,7 +1836,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "step_id",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 22,
@@ -1723,7 +1848,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "type",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 23,
@@ -1836,7 +1964,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                           "List": {
                             "name": "item",
                             "data_type": {
-                              "Dictionary": ["UInt8", "Utf8"]
+                              "Dictionary": [
+                                "UInt8",
+                                "Utf8"
+                              ]
                             },
                             "nullable": true,
                             "dict_id": 0,
@@ -1914,7 +2045,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
     {
       "name": "body",
       "data_type": {
-        "Dictionary": ["UInt8", "Utf8"]
+        "Dictionary": [
+          "UInt8",
+          "Utf8"
+        ]
       },
       "nullable": true,
       "dict_id": 3,
@@ -1923,7 +2057,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
     {
       "name": "name",
       "data_type": {
-        "Dictionary": ["UInt8", "Utf8"]
+        "Dictionary": [
+          "UInt8",
+          "Utf8"
+        ]
       },
       "nullable": true,
       "dict_id": 4,
@@ -1944,7 +2081,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "instanceId",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 1,
@@ -1953,7 +2093,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "receiveTimestamp",
             "data_type": {
-              "Dictionary": ["UInt8", "Utf8"]
+              "Dictionary": [
+                "UInt8",
+                "Utf8"
+              ]
             },
             "nullable": true,
             "dict_id": 2,
@@ -1973,7 +2116,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "configuration_name",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 5,
@@ -1982,7 +2128,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "location",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 6,
@@ -1991,7 +2140,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "project_id",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 7,
@@ -2000,7 +2152,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "revision_name",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 8,
@@ -2009,7 +2164,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "service_name",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 9,
@@ -2018,7 +2176,10 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "type",
                   "data_type": {
-                    "Dictionary": ["UInt8", "Utf8"]
+                    "Dictionary": [
+                      "UInt8",
+                      "Utf8"
+                    ]
                   },
                   "nullable": true,
                   "dict_id": 10,
