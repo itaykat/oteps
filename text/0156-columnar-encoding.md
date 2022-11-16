@@ -12,45 +12,60 @@ scenarios such as [multivariate time-series](#multivariate-time-series), large b
 
 ## Table of contents
 
-* [Introduction](#introduction)
-  * [Motivation](#motivation)
-  * [Validation](#validation)
-  * [Why Apache Arrow and How to Use It?](#why-apache-arrow-and-how-to-use-it)
-  * [Integration Strategy and Phasing](#integration-strategy-and-phasing)
-* [Protocol Details](#protocol-details)
-  * [EventStream Service](#eventstream-service)
-  * [Mapping OTEL Entities to Arrow Records](#mapping-otel-entities-to-arrow-records)
-    * [Label/Attribute Representation](#labelattribute-representation)
-    * [Metrics Payload](#metrics-payload)
-    * [Logs Payload](#logs-payload)
-    * [Spans Payload](#spans-payload)
-* [Implementation Recommendations](#implementation-recommendations)
-  * [Protocol Extension and Fallback Mechanism](#protocol-extension-and-fallback-mechanism)
-  * [Batch ID Generation](#batch-id-generation)
-  * [Substream ID Generation](#substream-id-generation)
-  * [Schema ID Generation](#schema-id-generation)
-  * [Traffic Balancing Optimization](#traffic-balancing-optimization)
-  * [Throttling](#throttling)
-  * [Best Effort Delivery Guarantee](#best-effort-delivery-guarantee)
-* [Risks and Mitigation](#risks-and-mitigations)
-* [Trade-offs and Mitigations](#trade-offs-and-mitigations)
-  * [Duplicate Data](#duplicate-data)
-  * [Incompatible Backends](#incompatible-backends)
-  * [Small Devices/Small Telemetry Data Stream](#small-devicessmall-telemetry-data-stream)
-* [Future Versions and Interoperability](#future-versions-and-interoperability)
-* [Prior Art and Alternatives](#prior-art-and-alternatives)
-* [Open Questions](#open-questions)
-* [Appendix A - Protocol Buffer Definitions](#appendix-a---protocol-buffer-definitions)
-* [Appendix B - Performance Benchmarks](#appendix-b---performance-benchmarks)
-* [Appendix C - Parameter Tuning and Design Optimization](#appendix-c---parameter-tuning-and-design-optimization)
-* [Appendix C - Schema Examples](#appendix-d---schema-examples)
-  * [Example of Schema for a Univariate Time-series](#example-of-schema-for-a-univariate-time-series)
-  * [Example of Schema for a Multivariate Time-series](#example-of-schema-for-a-multivariate-time-series)
-  * [Example of Schema for a GCP Log with JSON Payload](#example-of-schema-for-a-gcp-log-with-json-payload)
-  * [Example of Schema for a GCP Log with Proto Payload](#example-of-schema-for-a-gcp-log-with-proto-payload)
-  * [Example of Schema for a GCP Log with Text Payload](#example-of-schema-for-a-gcp-log-with-text-payload)
-* [Glossary](#glossary)
-* [Acknowledgements](#acknowledgements)
+- [OTLP Arrow Protocol Specification](#otlp-arrow-protocol-specification)
+  - [Table of contents](#table-of-contents)
+  - [Introduction](#introduction)
+    - [Motivation](#motivation)
+    - [Validation](#validation)
+    - [Why Apache Arrow and How to Use It?](#why-apache-arrow-and-how-to-use-it)
+    - [Integration Strategy and Phasing](#integration-strategy-and-phasing)
+      - [Phase 1](#phase-1)
+      - [Phase 2](#phase-2)
+  - [Protocol Details](#protocol-details)
+    - [EventStream Service](#eventstream-service)
+    - [Mapping OTEL Entities to Arrow Records](#mapping-otel-entities-to-arrow-records)
+      - [Label/Attribute Representation](#labelattribute-representation)
+      - [Metrics Payload](#metrics-payload)
+      - [Logs Payload](#logs-payload)
+      - [Spans Payload](#spans-payload)
+  - [Implementation Recommendations](#implementation-recommendations)
+    - [Protocol Extension and Fallback Mechanism](#protocol-extension-and-fallback-mechanism)
+    - [Batch ID Generation](#batch-id-generation)
+    - [Substream ID Generation](#substream-id-generation)
+    - [Schema ID Generation](#schema-id-generation)
+    - [Traffic Balancing Optimization](#traffic-balancing-optimization)
+    - [Throttling](#throttling)
+    - [Best Effort Delivery Guarantee](#best-effort-delivery-guarantee)
+  - [Risks and Mitigations](#risks-and-mitigations)
+  - [Trade-offs and Mitigations](#trade-offs-and-mitigations)
+    - [Duplicate Data](#duplicate-data)
+    - [Incompatible Backends](#incompatible-backends)
+    - [Small Devices/Small Telemetry Data Stream](#small-devicessmall-telemetry-data-stream)
+  - [Future Versions and Interoperability](#future-versions-and-interoperability)
+  - [Prior Art and Alternatives](#prior-art-and-alternatives)
+  - [Open Questions](#open-questions)
+  - [Appendix A - Protocol Buffer Definitions](#appendix-a---protocol-buffer-definitions)
+  - [Appendix B - Performance Benchmarks](#appendix-b---performance-benchmarks)
+    - [Metrics](#metrics)
+      - [Batch Size Analysis](#batch-size-analysis)
+      - [Serialization/Compression Time Analysis](#serializationcompression-time-analysis)
+    - [Logs](#logs)
+      - [Batch Size Analysis](#batch-size-analysis-1)
+      - [Serialization/Compression Time Analysis](#serializationcompression-time-analysis-1)
+    - [Traces](#traces)
+    - [Dataset Requirements](#dataset-requirements)
+  - [Appendix C - Parameter Tuning and Design Optimization](#appendix-c---parameter-tuning-and-design-optimization)
+  - [Appendix D - Schema Examples](#appendix-d---schema-examples)
+    - [Example of Schema for a Univariate Time-series](#example-of-schema-for-a-univariate-time-series)
+    - [Example of Schema for a Multivariate Time-series](#example-of-schema-for-a-multivariate-time-series)
+    - [Example of Schema for a GCP Log with JSON Payload](#example-of-schema-for-a-gcp-log-with-json-payload)
+    - [Example of Schema for a GCP Log with Proto Payload](#example-of-schema-for-a-gcp-log-with-proto-payload)
+    - [Example of Schema for a GCP Log with Text Payload](#example-of-schema-for-a-gcp-log-with-text-payload)
+  - [Glossary](#glossary)
+    - [Arrow Dictionary](#arrow-dictionary)
+    - [Arrow IPC Format](#arrow-ipc-format)
+    - [Multivariate Time-series](#multivariate-time-series)
+  - [Acknowledgements](#acknowledgements)
 
 ## Introduction
 
@@ -62,15 +77,15 @@ protocol to better address them while maintaining the compatibility with the exi
 
 Currently, the OTLP protocol uses a "row-oriented" format to represent all the OTEL entities. This representation works
 well for small batches (<50 entries) but, as the analytical database industry has shown, a "column-oriented"
-representation is more optimal for the transfer and processing of *large batches* of entities. The term "row-oriented"
+representation is more optimal for the transfer and processing of _large batches_ of entities. The term "row-oriented"
 is used when data is organized into a series of records, keeping all data associated with a record next to each other in
 memory. A "column-oriented" system organizes data by fields, grouping all the data associated with a field next to each
 other in memory. The main benefits of a columnar approach are:
 
-* **better data compression rate** (arrays of similar data generally compress better),
-* **faster data processing** (see diagram below),
-* **faster serialization and deserialization** (few arrays vs many in-memory objects to serialize/deserialize),
-* **better IO efficiency** (less data to transmit).
+- **better data compression rate** (arrays of similar data generally compress better),
+- **faster data processing** (see diagram below),
+- **faster serialization and deserialization** (few arrays vs many in-memory objects to serialize/deserialize),
+- **better IO efficiency** (less data to transmit).
 
 ![row vs column-oriented](img/0156_OTEL%20-%20Row%20vs%20Column.png)
 
@@ -78,14 +93,14 @@ This OTEP proposes to extend the [OpenTelemetry protocol (OTEP 0035)](https://gi
 with a **generic columnar representation for metrics, logs and traces based on Apache Arrow**. Compared to the existing
 OpenTelemetry protocol this compatible extension has the following improvements:
 
-* **Reduce the bandwidth requirements** of the protocol. The two main levers are: 1) a better representation of the
+- **Reduce the bandwidth requirements** of the protocol. The two main levers are: 1) a better representation of the
   telemetry data based on a columnar representation, 2) a stream-oriented gRPC endpoint that is more efficient to
   transmit batches of OTLP entities.
-* **Provide a more optimal representation for multivariate time-series data**.
+- **Provide a more optimal representation for multivariate time-series data**.
   With the current version of the OpenTelemetry protocol, users have to transform multivariate time-series (i.e multiple
   related metrics sharing the same attributes and timestamp) into a collection of univariate time-series resulting in a
   large amount of duplication and additional overhead covering the entire chain from exporters to backends.
-* **Provide more advanced and efficient telemetry data processing capabilities**. Increasing data volume, cost
+- **Provide more advanced and efficient telemetry data processing capabilities**. Increasing data volume, cost
   efficiency, and data minimization require additional data processing capabilities such as data projection,
   aggregation, and filtering.
 
@@ -107,14 +122,14 @@ basis for columnar support in OTLP.
 A series of tests were conducted to compare compression ratios between OTLP and a columnar version of OTLP called OTLP
 Arrow. The two key results are:
 
-* For multivariate time series, OTLP Arrow is **4 times better in terms of bandwidth reduction while improving by
+- For multivariate time series, OTLP Arrow is **4 times better in terms of bandwidth reduction while improving by
   3 the speed** of creation + serialization + compression + decompression + deserialization.
-* For logs and traces, OTLP Arrow is **2 times better in terms of bandwidth reduction** while having only a very slight
+- For logs and traces, OTLP Arrow is **2 times better in terms of bandwidth reduction** while having only a very slight
   speed drop for the creation + serialization + compression + decompression + deserialization steps.
 
 ![Summary](img/0156_summary.png)
 
-Bandwidth gains between *OTLP* and *OTLP Arrow* in a multivariate time series context are represented in the left column.
+Bandwidth gains between _OTLP_ and _OTLP Arrow_ in a multivariate time series context are represented in the left column.
 Similarly, logs are represented in the right column. For both protocols, the baseline is the size of the uncompressed
 OTLP messages. The reduction factor is the ratio between this baseline and the compressed message size for each
 protocol.
@@ -126,11 +141,11 @@ are on par for logs, as shown in the right column.
 ![Summary of the time spent](img/0156_summary_time_spent.png)
 [Zoom on the chart](https://github.com/F5Networks/otlp-arrow-collector/raw/main/docs/img/summary_time_spent.png)
 
-A more detailed presentation of the benchmarks comparing *OTLP* and *OTLP Arrow* can be found in the following
+A more detailed presentation of the benchmarks comparing _OTLP_ and _OTLP Arrow_ can be found in the following
 sections:
 
-* [Performance benchmark](#appendix-b---performance-benchmarks)
-* [Parameter tuning and design optimization](#appendix-c---parameter-tuning-and-design-optimization)
+- [Performance benchmark](#appendix-b---performance-benchmarks)
+- [Parameter tuning and design optimization](#appendix-c---parameter-tuning-and-design-optimization)
 
 > In conclusion, these benchmarks demonstrate the interest of integrating a column-oriented telemetry data protocol to
 > optimize bandwidth and processing speed in a batch processing context.
@@ -140,10 +155,10 @@ sections:
 [Apache Arrow](https://arrow.apache.org/) is a versatile columnar format for flat and hierarchical data, well
 established in the industry. Arrow is optimized for:
 
-* fast serialization and deserialization of columnar data (zero-copy)
-* in-memory analytic operations using modern hardware optimizations (e.g. SIMD)
-* integration with a large ecosystem (e.g. data pipelines, databases, stream processing, etc.)
-* language-independent
+- fast serialization and deserialization of columnar data (zero-copy)
+- in-memory analytic operations using modern hardware optimizations (e.g. SIMD)
+- integration with a large ecosystem (e.g. data pipelines, databases, stream processing, etc.)
+- language-independent
 
 All these properties make Arrow a great choice for a general-purpose telemetry protocol. Efficient implementations of
 Apache Arrow exist for most of the languages (Java, Go, C++, Rust, ...). Connectors with Apache Arrow buffer exist for
@@ -236,7 +251,7 @@ continuously
 ![Sequence diagram](img/0156_OTEL%20-%20ProtocolSeqDiagram.png)
 
 > Multiple streams can be simultaneously opened between a client and a server to increase the maximum achievable
-throughput.
+> throughput.
 
 If the client is shutting down (e.g. when the containing process wants to exit) the client will optionally wait until
 all pending acknowledgements are received or until an implementation specific timeout expires. This ensures reliable
@@ -270,7 +285,7 @@ message BatchEvent {
   // [optional]
   DeliveryType delivery_type = 4;
   // [mandatory]
-  CompressionMethod compression = 5;  
+  CompressionMethod compression = 5;
 }
 ```
 
@@ -393,9 +408,9 @@ success response indicates telemetry data is successfully received (BEST_EFFORT 
 
 When an error is returned by the server it falls into 2 broad categories: retryable and not-retryable:
 
-* Retryable errors indicate that processing of telemetry data failed and the client should record the error and may
+- Retryable errors indicate that processing of telemetry data failed and the client should record the error and may
   retry exporting the same data. This can happen when the server is temporarily unable to process the data.
-* Not-retryable errors indicate that processing of telemetry data failed and the client must not retry sending the same
+- Not-retryable errors indicate that processing of telemetry data failed and the client must not retry sending the same
   telemetry data. The telemetry data must be dropped. This can happen, for example, when the request contains bad data
   and
   cannot be deserialized or otherwise processed by the server. The client should maintain a counter of such dropped
@@ -463,10 +478,10 @@ time-series.
 qualify
 each metric.
 
-* state = used
-* state = free
-* state = inactive
-* ...
+- state = used
+- state = free
+- state = inactive
+- ...
 
 For each of these states, the metrics share the same attributes, timestamp, ... Taken individually, these metrics don't
 make much sense. Knowing the free memory without knowing the used memory or the total memory is not very informative.
@@ -504,7 +519,7 @@ type struct. However, OTLP attribute types can be much more complex than a simpl
 depends on the type of the `AnyValue` described in Protobuf. In most cases, the translation is simple and follow the table below:
 
 | OTEL data type | Arrow data type |
-|----------------|-----------------|
+| -------------- | --------------- |
 | `int64`        | `int64`         |
 | `double`       | `float64`       |
 | `bool`         | `bool`          |
@@ -514,9 +529,9 @@ depends on the type of the `AnyValue` described in Protobuf. In most cases, the 
 However, `ArrayValue` and `KeyValueList` are more complex `AnyValue` to represent because they are used to represent a
 more complex hierarchy of objects. Two options were **considered** and **tested**:
 
-* `ArrayValue` is translated to an `Arrow List`, and `KeyValueList` is translated to an `Arrow Struct` making the final
+- `ArrayValue` is translated to an `Arrow List`, and `KeyValueList` is translated to an `Arrow Struct` making the final
   representation highly structured.
-* `ArrayValue` and `KeyValueList` are serialized to a normalized JSON string and then stored as a `utf8` column.
+- `ArrayValue` and `KeyValueList` are serialized to a normalized JSON string and then stored as a `utf8` column.
 
 The first option was chosen because it gives the best results (see section [Design optimization](#appendix-c---parameter-tuning-and-design-optimization).
 
@@ -524,61 +539,61 @@ The first option was chosen because it gives the best results (see section [Desi
 
 The set of possible columns for a metric payload is summarized in the following table.
 
-| Column name                  | Column type          | Required | Description                                                                                   |
-|------------------------------|----------------------|----------|-----------------------------------------------------------------------------------------------|
-| `resource`                   | `struct`             | No       | Structure regrouping the fields of the resource                                               |
-| __`attributes`               | `struct`             | No       | Structure regrouping the fields of the resource attributes                                    |
-| ____`[key]`                  | `dynamic`            | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details |
-| __`dropped_attributes_count` | `uint32`             | No       | The number of resource dropped attributes.                                                    |
-| __`schema_url`               | `string`             | No       | Schema url.                                                                                   |
-| `instrumentation_library`    | `struct`             | No       | Structure regrouping the fields of the instrumentation library                                |
-| __`name`                     | `string`             | No       | Name of the instrumentation library                                                           |
-| __`version`                  | `string`             | No       | Version of the instrumentation library                                                        |
-| `start_time_unix_nano`       | `uint64`             | No       | The start time for points with cumulative and delta AggregationTemporality                    |
-| `time_unix_nano`             | `uint64`             | Yes      | The moment corresponding to when the data point's aggregate value was captured.               |
-| `labels`                     | `struct`             | No       | Structure regrouping the fields of the labels                                                 |
-| __`[key]`                    | `string`             | No       | A set of labels, see [label section](#labelattribute-representation) for more details         |
-| `attributes`                 | `struct`             | No       | Structure regrouping the fields of the attributes                                             |
-| __`[key]`                    | `dynamic`            | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details |
-| `gauge_[name]`               | `int64` or `float64` | No       | A set of gauge metric values.                                                                 |
-| `sum_[name]`                 | `int64` or `float64` | No       | A set of sum metric values.                                                                   |
-| `histogram_[name]`           | `struct`             | No       | Structure regrouping the fields of the histogram                                              |
-| __`count`                    | `int64`              | No       | A set of histogram count metric values.                                                       |
-| __`sum`                      | `float64`            | No       | A set of histogram sum metric values.                                                         |
-| __`bucket_counts`            | `list int64`         | No       | A set of histogram bucket counts metric values.                                               |
-| __`explicit_bounds`          | `list float64`       | No       | A set of histogram explicit bounds metric values.                                             |
-| `exp_histogram_[name]`       | `struct`             | No       | Structure regrouping the fields of the exponential histogram                                  |
-| __`count`                    | `int64`              | No       | A set of exponential histogram count metric values.                                           |
-| __`sum`                      | `float64`            | No       | A set of exponential histogram sum metric values.                                             |
-| __`scale`                    | `int32`              | No       | A set of exponential histogram scale metric values.                                           |
-| __`zero_count`               | `uint64`             | No       | A set of exponential histogram zero count metric values.                                      |
-| __`positive_offset`          | `int32`              | No       | A set of exponential histogram positive offset values.                                        |
-| __`positive_bucket`          | `list uint64`        | No       | A set of exponential histogram positive bucket counts values.                                 |
-| __`negative_offset`          | `int32`              | No       | A set of exponential histogram negative offset values.                                        |
-| __`negative_bucket_counts`   | `list uint64`        | No       | A set of exponential histogram negative bucket counts values.                                 |
-| `summary_[name]`             | `struct`             | No       | Structure regrouping the fields of the summary                                                |
-| __`count`                    | `int64`              | No       | A set of summary count metric values.                                                         |
-| __`sum`                      | `float64`            | No       | A set of summary sum metric values.                                                           |
-| __`quantiles`                | `list float64`       | No       | A set of summary quantiles metric values.                                                     |
-| __`values`                   | `list float64`       | No       | A set of summary quantile values metric values.                                               |
-| `schema_url`                 | `string`             | No       | Schema url of the metrics.                                                                    |
-| `examplars`                  | `list struct`        | No       | Examplars a list of structs.                                                                  |
-| __`filtered_attributes`      | `struct`             | No       | Structure regrouping the fields of the examplar attributes                                    |
-| ____`[key]`                  | `dynamic`            | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details |
-| __`filtered_labels`          | `struct`             | No       | Structure regrouping the fields of the examplar labels                                        |
-| ____`[key]`                  | `string`             | No       | A set of labels, see [label section](#labelattribute-representation) for more details         |
-| `time_unix_nano`             | `uint64`             | Yes      | The moment corresponding to when the examplar data point's aggregate value was captured.      |
-| `value`                      | `int64` or `float64` | No       | The value of the measurement.                                                                 |
-| `span_id`                    | `binary`             | No       | Identifier of the span.                                                                       |
-| `trace_id`                   | `binary`             | No       | Identifier of the trace.                                                                      |
-| `flags`                      | `uint32`             | No       | Flags that apply to this specific data point.                                                 |
+| Column name                    | Column type          | Required | Description                                                                                   |
+| ------------------------------ | -------------------- | -------- | --------------------------------------------------------------------------------------------- |
+| `resource`                     | `struct`             | No       | Structure regrouping the fields of the resource                                               |
+| \_\_`attributes`               | `struct`             | No       | Structure regrouping the fields of the resource attributes                                    |
+| \_\_\_\_`[key]`                | `dynamic`            | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details |
+| \_\_`dropped_attributes_count` | `uint32`             | No       | The number of resource dropped attributes.                                                    |
+| \_\_`schema_url`               | `string`             | No       | Schema url.                                                                                   |
+| `instrumentation_library`      | `struct`             | No       | Structure regrouping the fields of the instrumentation library                                |
+| \_\_`name`                     | `string`             | No       | Name of the instrumentation library                                                           |
+| \_\_`version`                  | `string`             | No       | Version of the instrumentation library                                                        |
+| `start_time_unix_nano`         | `uint64`             | No       | The start time for points with cumulative and delta AggregationTemporality                    |
+| `time_unix_nano`               | `uint64`             | Yes      | The moment corresponding to when the data point's aggregate value was captured.               |
+| `labels`                       | `struct`             | No       | Structure regrouping the fields of the labels                                                 |
+| \_\_`[key]`                    | `string`             | No       | A set of labels, see [label section](#labelattribute-representation) for more details         |
+| `attributes`                   | `struct`             | No       | Structure regrouping the fields of the attributes                                             |
+| \_\_`[key]`                    | `dynamic`            | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details |
+| `gauge_[name]`                 | `int64` or `float64` | No       | A set of gauge metric values.                                                                 |
+| `sum_[name]`                   | `int64` or `float64` | No       | A set of sum metric values.                                                                   |
+| `histogram_[name]`             | `struct`             | No       | Structure regrouping the fields of the histogram                                              |
+| \_\_`count`                    | `int64`              | No       | A set of histogram count metric values.                                                       |
+| \_\_`sum`                      | `float64`            | No       | A set of histogram sum metric values.                                                         |
+| \_\_`bucket_counts`            | `list int64`         | No       | A set of histogram bucket counts metric values.                                               |
+| \_\_`explicit_bounds`          | `list float64`       | No       | A set of histogram explicit bounds metric values.                                             |
+| `exp_histogram_[name]`         | `struct`             | No       | Structure regrouping the fields of the exponential histogram                                  |
+| \_\_`count`                    | `int64`              | No       | A set of exponential histogram count metric values.                                           |
+| \_\_`sum`                      | `float64`            | No       | A set of exponential histogram sum metric values.                                             |
+| \_\_`scale`                    | `int32`              | No       | A set of exponential histogram scale metric values.                                           |
+| \_\_`zero_count`               | `uint64`             | No       | A set of exponential histogram zero count metric values.                                      |
+| \_\_`positive_offset`          | `int32`              | No       | A set of exponential histogram positive offset values.                                        |
+| \_\_`positive_bucket`          | `list uint64`        | No       | A set of exponential histogram positive bucket counts values.                                 |
+| \_\_`negative_offset`          | `int32`              | No       | A set of exponential histogram negative offset values.                                        |
+| \_\_`negative_bucket_counts`   | `list uint64`        | No       | A set of exponential histogram negative bucket counts values.                                 |
+| `summary_[name]`               | `struct`             | No       | Structure regrouping the fields of the summary                                                |
+| \_\_`count`                    | `int64`              | No       | A set of summary count metric values.                                                         |
+| \_\_`sum`                      | `float64`            | No       | A set of summary sum metric values.                                                           |
+| \_\_`quantiles`                | `list float64`       | No       | A set of summary quantiles metric values.                                                     |
+| \_\_`values`                   | `list float64`       | No       | A set of summary quantile values metric values.                                               |
+| `schema_url`                   | `string`             | No       | Schema url of the metrics.                                                                    |
+| `examplars`                    | `list struct`        | No       | Examplars a list of structs.                                                                  |
+| \_\_`filtered_attributes`      | `struct`             | No       | Structure regrouping the fields of the examplar attributes                                    |
+| \_\_\_\_`[key]`                | `dynamic`            | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details |
+| \_\_`filtered_labels`          | `struct`             | No       | Structure regrouping the fields of the examplar labels                                        |
+| \_\_\_\_`[key]`                | `string`             | No       | A set of labels, see [label section](#labelattribute-representation) for more details         |
+| `time_unix_nano`               | `uint64`             | Yes      | The moment corresponding to when the examplar data point's aggregate value was captured.      |
+| `value`                        | `int64` or `float64` | No       | The value of the measurement.                                                                 |
+| `span_id`                      | `binary`             | No       | Identifier of the span.                                                                       |
+| `trace_id`                     | `binary`             | No       | Identifier of the trace.                                                                      |
+| `flags`                        | `uint32`             | No       | Flags that apply to this specific data point.                                                 |
 
 A column of type `dynamic` means that the type of this column depends on the type of the OTLP attribute (see section
 [attribute representation](#labelattribute-representation) for more details).
 
 `Gauge`, `Sum`, `Histogram`, `Exponential Histogram`, and `Summary` are represented with a family of columns prefixed
 with
-the metric kind (i.e. gauge_, sum_, ...), the property (count_, sum_, scale_, ...) and followed by the metric name.
+the metric kind (i.e. gauge*, sum*, ...), the property (count*, sum*, scale\_, ...) and followed by the metric name.
 
 `Examplars` are represented as a JSON string. **The assumptions are that their use is rare and that the need to process
 them at the collector level is low.**
@@ -601,27 +616,27 @@ corresponding metric type (gauge, sum, histogram, exp_histogram, summary).
 
 Although simpler, a logs 'OtlpArrowPayload' takes a similar approach.
 
-| Column name                  | Column type | Required | Description                                                                                                     |
-|------------------------------|-------------|----------|-----------------------------------------------------------------------------------------------------------------|
-| `resource`                   | `struct`    | No       | Structure regrouping the fields of the resource                                                                 |
-| __`attributes`               | `struct`    | No       | Structure regrouping the fields of the resource attributes                                                      |
-| ____`[key]`                  | `dynamic`   | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details                   |
-| __`dropped_attributes_count` | `uint32`    | No       | The number of resource dropped attributes.                                                                      |
-| __`schema_url`               | `string`    | No       | Schema url.                                                                                                     |
-| `instrumentation_library`    | `struct`    | No       | Structure regrouping the fields of the instrumentation library                                                  |
-| __`name`                     | `string`    | No       | Name of the instrumentation library                                                                             |
-| __`version`                  | `string`    | No       | Version of the instrumentation library                                                                          |
-| `time_unix_nano`             | `uint64`    | Yes      | The time when the event occurred.                                                                               |
-| `severity_number`            | `uint8`     | Yes      | The severity number.                                                                                            |
-| `severity_text`              | `string`    | No       | The severity test.                                                                                              |
-| `name`                       | `string`    | No       | Short event identifier that does not contain varying parts.                                                     |
-| `body`                       | `dynamic`   | No       | The body of the log record (see below for more details).                                                        |
-| `attributes`                 | `struct`    | No       | Structure regrouping the fields of the attributes                                                               |
-| __`[key]`                    | `dynamic`   | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details                   |
-| `dropped_attributes_count`   | `uint64`    | No       | The number of dropped attributes.                                                                               |
-| `flags`                      | `uint32`    | No       | Flags, a bit field. 8 least significant bits are the trace flags as defined in W3C Trace Context specification. |
-| `trace_id`                   | `binary`    | No       | Identifier of the trace.                                                                                        |
-| `span_id`                    | `binary`    | No       | Identifier of the span.                                                                                         |
+| Column name                    | Column type | Required | Description                                                                                                     |
+| ------------------------------ | ----------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| `resource`                     | `struct`    | No       | Structure regrouping the fields of the resource                                                                 |
+| \_\_`attributes`               | `struct`    | No       | Structure regrouping the fields of the resource attributes                                                      |
+| \_\_\_\_`[key]`                | `dynamic`   | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details                   |
+| \_\_`dropped_attributes_count` | `uint32`    | No       | The number of resource dropped attributes.                                                                      |
+| \_\_`schema_url`               | `string`    | No       | Schema url.                                                                                                     |
+| `instrumentation_library`      | `struct`    | No       | Structure regrouping the fields of the instrumentation library                                                  |
+| \_\_`name`                     | `string`    | No       | Name of the instrumentation library                                                                             |
+| \_\_`version`                  | `string`    | No       | Version of the instrumentation library                                                                          |
+| `time_unix_nano`               | `uint64`    | Yes      | The time when the event occurred.                                                                               |
+| `severity_number`              | `uint8`     | Yes      | The severity number.                                                                                            |
+| `severity_text`                | `string`    | No       | The severity test.                                                                                              |
+| `name`                         | `string`    | No       | Short event identifier that does not contain varying parts.                                                     |
+| `body`                         | `dynamic`   | No       | The body of the log record (see below for more details).                                                        |
+| `attributes`                   | `struct`    | No       | Structure regrouping the fields of the attributes                                                               |
+| \_\_`[key]`                    | `dynamic`   | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details                   |
+| `dropped_attributes_count`     | `uint64`    | No       | The number of dropped attributes.                                                                               |
+| `flags`                        | `uint32`    | No       | Flags, a bit field. 8 least significant bits are the trace flags as defined in W3C Trace Context specification. |
+| `trace_id`                     | `binary`    | No       | Identifier of the trace.                                                                                        |
+| `span_id`                      | `binary`    | No       | Identifier of the span.                                                                                         |
 
 The type of the column `body` depends on the OTLP type and follows the same transformation rules used in the [attributes](#labelattribute-representation).
 
@@ -629,46 +644,46 @@ The type of the column `body` depends on the OTLP type and follows the same tran
 
 The set of possible columns for a span payload is summarized in the following table.
 
-| Column name                  | Column type      | Required | Description                                                                                   |
-|------------------------------|------------------|----------|-----------------------------------------------------------------------------------------------|
-| `resource`                   | `struct`         | No       | Structure regrouping the fields of the resource                                               |
-| __`attributes`               | `struct`         | No       | Structure regrouping the fields of the resource attributes                                    |
-| ____`[key]`                  | `dynamic`        | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details |
-| __`dropped_attributes_count` | `uint32`         | No       | The number of resource dropped attributes.                                                    |
-| __`schema_url`               | `string`         | No       | Schema url.                                                                                   |
-| `instrumentation_library`    | `struct`         | No       | Structure regrouping the fields of the instrumentation library                                |
-| __`name`                     | `string`         | No       | Name of the instrumentation library                                                           |
-| __`version`                  | `string`         | No       | Version of the instrumentation library                                                        |
-| `trace_id`                   | `binary`         | Yes      | Identifier of the trace.                                                                      |
-| `span_id`                    | `binary`         | Yes      | Identifier of the span.                                                                       |
-| `trace_state`                | `string`         | No       | trace state.                                                                                  |
-| `parent_span_id`             | `string`         | No       | Parent span id.                                                                               |
-| `name`                       | `string`         | No       | A description of the span's operation.                                                        |
-| `kind`                       | `uint8`          | Yes      | Distinguishes between spans generated in a particular context.                                |
-| `start_time_unix_nano`       | `uint64`         | Yes      | The start time of the span.                                                                   |
-| `end_time_unix_nano`         | `uint64`         | Yes      | The end time of the span.                                                                     |
-| `attributes`                 | `struct`         | No       | Structure regrouping the fields of the attributes                                             |
-| __`[key]`                    | `dynamic`        | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details |
-| `dropped_attributes_count`   | `uint64`         | No       | The number of dropped attributes.                                                             |
-| `events`                     | `list of struct` | No       | List of events                                                                                |
-| __`time_unix_nano`           | `uint64`         | Yes      | The time the event occurred                                                                   |
-| __`name`                     | `string`         | Yes      | The name of the event.                                                                        |
-| __`attributes`               | `struct`         | No       | Structure regrouping the fields of the event attributes                                       |
-| ____`[key]`                  | `dynamic`        | No       | A set of attributes, see [label section](#labelattribute-representation) for more details.    |
-| __`dropped_attributes_count` | `uint64`         | No       | The number of dropper attributes.                                                             |
-| `dropped_events_count`       | `uint64`         | No       | The number of dropped events.                                                                 |
-| `links`                      | `list of struct` | No       | List of links                                                                                 |
-| __`trace_id`                 | `binary`         | Yes      | A unique identifier of a trace that this linked span is part of.                              |
-| __`span_id`                  | `binary`         | Yes      | A unique identifier for the linked span.                                                      |
-| __`trace_state`              | `string`         | Yes      | The trace_state associated with the link.                                                     |
-| __`attributes`               | `struct`         | No       | Structure regrouping the fields of the event attributes                                       |
-| ____`[key]`                  | `dynamic`        | No       | A set of attributes, see [label section](#labelattribute-representation) for more details.    |
-| __`dropped_attributes_count` | `uint64`         | No       | The number of dropped attributes.                                                             |
-| `dropped_links_count`        | `uint64`         | No       | The number of dropped links.                                                                  |
-| `status`                     | `struct`         | No       | The status of the span.                                                                       |
-| __`deprecated_code`          | `uint8`          | No       | The deprecated status code.                                                                   |
-| __`message`                  | `string`         | No       | The status message.                                                                           |
-| __`code`                     | `uint8`          | No       | The status code.                                                                              |
+| Column name                    | Column type      | Required | Description                                                                                   |
+| ------------------------------ | ---------------- | -------- | --------------------------------------------------------------------------------------------- |
+| `resource`                     | `struct`         | No       | Structure regrouping the fields of the resource                                               |
+| \_\_`attributes`               | `struct`         | No       | Structure regrouping the fields of the resource attributes                                    |
+| \_\_\_\_`[key]`                | `dynamic`        | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details |
+| \_\_`dropped_attributes_count` | `uint32`         | No       | The number of resource dropped attributes.                                                    |
+| \_\_`schema_url`               | `string`         | No       | Schema url.                                                                                   |
+| `instrumentation_library`      | `struct`         | No       | Structure regrouping the fields of the instrumentation library                                |
+| \_\_`name`                     | `string`         | No       | Name of the instrumentation library                                                           |
+| \_\_`version`                  | `string`         | No       | Version of the instrumentation library                                                        |
+| `trace_id`                     | `binary`         | Yes      | Identifier of the trace.                                                                      |
+| `span_id`                      | `binary`         | Yes      | Identifier of the span.                                                                       |
+| `trace_state`                  | `string`         | No       | trace state.                                                                                  |
+| `parent_span_id`               | `string`         | No       | Parent span id.                                                                               |
+| `name`                         | `string`         | No       | A description of the span's operation.                                                        |
+| `kind`                         | `uint8`          | Yes      | Distinguishes between spans generated in a particular context.                                |
+| `start_time_unix_nano`         | `uint64`         | Yes      | The start time of the span.                                                                   |
+| `end_time_unix_nano`           | `uint64`         | Yes      | The end time of the span.                                                                     |
+| `attributes`                   | `struct`         | No       | Structure regrouping the fields of the attributes                                             |
+| \_\_`[key]`                    | `dynamic`        | No       | A set of attributes, see [attribute section](#labelattribute-representation) for more details |
+| `dropped_attributes_count`     | `uint64`         | No       | The number of dropped attributes.                                                             |
+| `events`                       | `list of struct` | No       | List of events                                                                                |
+| \_\_`time_unix_nano`           | `uint64`         | Yes      | The time the event occurred                                                                   |
+| \_\_`name`                     | `string`         | Yes      | The name of the event.                                                                        |
+| \_\_`attributes`               | `struct`         | No       | Structure regrouping the fields of the event attributes                                       |
+| \_\_\_\_`[key]`                | `dynamic`        | No       | A set of attributes, see [label section](#labelattribute-representation) for more details.    |
+| \_\_`dropped_attributes_count` | `uint64`         | No       | The number of dropper attributes.                                                             |
+| `dropped_events_count`         | `uint64`         | No       | The number of dropped events.                                                                 |
+| `links`                        | `list of struct` | No       | List of links                                                                                 |
+| \_\_`trace_id`                 | `binary`         | Yes      | A unique identifier of a trace that this linked span is part of.                              |
+| \_\_`span_id`                  | `binary`         | Yes      | A unique identifier for the linked span.                                                      |
+| \_\_`trace_state`              | `string`         | Yes      | The trace_state associated with the link.                                                     |
+| \_\_`attributes`               | `struct`         | No       | Structure regrouping the fields of the event attributes                                       |
+| \_\_\_\_`[key]`                | `dynamic`        | No       | A set of attributes, see [label section](#labelattribute-representation) for more details.    |
+| \_\_`dropped_attributes_count` | `uint64`         | No       | The number of dropped attributes.                                                             |
+| `dropped_links_count`          | `uint64`         | No       | The number of dropped links.                                                                  |
+| `status`                       | `struct`         | No       | The status of the span.                                                                       |
+| \_\_`deprecated_code`          | `uint8`          | No       | The deprecated status code.                                                                   |
+| \_\_`message`                  | `string`         | No       | The status message.                                                                           |
+| \_\_`code`                     | `uint8`          | No       | The status code.                                                                              |
 
 ## Implementation Recommendations
 
@@ -677,12 +692,12 @@ The set of possible columns for a span payload is summarized in the following ta
 The support of this new protocol can only be progressive, so implementers are advised to follow the following
 implementation recommendations (phase 1):
 
-* OTLP Receiver: Listen on a single TCP port for both OTLP and OTLP Arrow. The goal is to make the support of this
+- OTLP Receiver: Listen on a single TCP port for both OTLP and OTLP Arrow. The goal is to make the support of this
   protocol extension
   transparent and automatic. This can be achieved by adding the `EventsService` to the same gRPC listener. A
   configuration
   parameter could be added to the OTLP receiver to disable this default behavior to support specific uses.
-* OTLP Exporter: By default the OTLP exporter should initiate a connection to the `EventsService` endpoint of the target
+- OTLP Exporter: By default the OTLP exporter should initiate a connection to the `EventsService` endpoint of the target
   receiver. If this connection fails because the `EventsService` is not implemented by the target, the exporter
   must automatically fall back on the behavior of the classic OTLP protocol. A configuration parameter could be added to
   disable this default behavior.
@@ -703,17 +718,17 @@ A simple numeric counter can be used to implement this batch_id, the goal being 
 The `sub_stream_id` attribute is used to identify a sub-stream of `BatchEvent` that share the same characteristics.
 The life cycle of a substream is as follows:
 
-* In addition to the data, the first `BatchEvent` will contain its schema and an optional set of dictionaries.
+- In addition to the data, the first `BatchEvent` will contain its schema and an optional set of dictionaries.
   A `sub_stream_id` is created and associated to this `BatchEvent`.
-* The following `BatchEvents` sharing the same characteristics then refer to the `sub_stream_id` to avoid the
+- The following `BatchEvents` sharing the same characteristics then refer to the `sub_stream_id` to avoid the
   retransmission of the schema and the dictionaries. Concerning the dictionaries, it is however possible to transmit an
   updated version with this mechanism.
 
 Multiple approaches are possible to create this `sub_stream_id` depending on the producer and the way the telemetry data
 is generated. Depending on the context, certain approaches are more appropriate:
 
-* When the producer is already organized to produce uniform streams then a simple numeric counter can be used.
-* A more generic (but less efficient) approach is to generate a hash from the columns names and types (sorted
+- When the producer is already organized to produce uniform streams then a simple numeric counter can be used.
+- A more generic (but less efficient) approach is to generate a hash from the columns names and types (sorted
   lexicographically)
   and use this hash as `sub_stream_id`. This allows all schema-compatible telemetry data to be sent on the same
   substream. Although collisions at this scale will be extremely rare, it is advisable to implement a strategy to avoid
@@ -730,17 +745,17 @@ the `sub_stream_id`
 outside the connection between the source and the collector. There is no guarantee that all sources encode the
 `sub_stream_id` in the same way. Therefore, we recommend calculating the schema id in the following way:
 
-* for each Arrow Schema create a list of triples (name, type, metadata) for each column.
-* sort these triples according to a lexicographic order.
-* concatenate the sorted triples with a separator and use these identifiers as `schema_id` (or a shorter version via
+- for each Arrow Schema create a list of triples (name, type, metadata) for each column.
+- sort these triples according to a lexicographic order.
+- concatenate the sorted triples with a separator and use these identifiers as `schema_id` (or a shorter version via
   an equivalence table).
 
 ### Traffic Balancing Optimization
 
 To mitigate the usual pitfalls of a stream-oriented protocol, protocol implementers are advised to:
 
-* client side: create several streams in parallel (e.g. create a new stream every 10 event types),
-* server side: close streams that have been open for a long time (e.g. close stream every 1 hour).
+- client side: create several streams in parallel (e.g. create a new stream every 10 event types),
+- server side: close streams that have been open for a long time (e.g. close stream every 1 hour).
 
 These parameters must be exposed in a configuration file and be tuned according to the application.
 
@@ -910,7 +925,7 @@ message OtlpArrowPayload {
 
   // [mandatory] Serialized Arrow Record Batch
   EncodedData record_batch = 4;
-  
+
   // [mandatory]
   CompressionMethod compression = 5;
 }
@@ -1022,7 +1037,7 @@ support.
 > stands out for columnar data.
 
 Even for small batches of metrics, the OTLP Arrow representation is more efficient than the OTLP representation in a
-*multivariate time-series context* (see table below).
+_multivariate time-series context_ (see table below).
 
 ![Metrics small batches](img/0156_metrics_small_batches.png)
 
@@ -1062,10 +1077,10 @@ fields).
 The following multi-line plot show the compressed batch size in bytes for different protocols and combination of
 parameters:
 
-* protocol (OTLP or OTLP Arrow)
-* batch size (5000, 10000, 25000, 50000, 100000)
-* compression algorithms (Zlib, Lz4, Zstd)
-* Sorted vs unsorted columns (only for OTLP Arrow)
+- protocol (OTLP or OTLP Arrow)
+- batch size (5000, 10000, 25000, 50000, 100000)
+- compression algorithms (Zlib, Lz4, Zstd)
+- Sorted vs unsorted columns (only for OTLP Arrow)
 
 ![Metrics bytes](img/0156_logs_bytes.png)
 
@@ -1107,9 +1122,30 @@ smaller than an OTLP message with the same content.
 
 ### Traces
 
-No benchmark has been conducted for traces due to lack of a dataset containing traces with links and events.
+### Dataset Requirements
 
-Please feel free to share a dataset with such characteristics to complete this document.
+In order to have a realistic benchmark we need a dedicated dataset for the different scenarios we want to test, there are three main scenarios:
+
+1. **[CASE]** Validation of the encoding and decoding procedures of OTLP to OTLP Arrow
+   - **[DATASET]** - Exhaustivity - Testing the encoding mechanism under every permutation and variation of traces to ensure proper behavior of types translations
+     - Verify that all Trace fields are covered
+     - Nested object (links, events, etc.)
+   - **[DATASET]** - Malformed - This dataset is composed of malformed traces and should test the robustness of the encoding mechanism
+     - Missing required field
+     - UUID (i.e Trace ID) fields don’t have the right size
+     - Field value out of the acceptable values (enum)
+     - Different types (number instead of string)
+     - Very huge Trace requests
+       - Single Trace with many spans
+       - Medium side trace with a huge field inside > 10MB (i.e payload)
+       - Note: There is already a limitation in the gRPC API to ensure we can't be overloaded with huge messages, though there are some cases where the overall request is under that limit but includes a very big field within it
+       - Empty fields
+       - Malformed trace request (TBD)
+2. **[CASE]** Testing the OTLP Arrow compression ratio for different types of realistic use-cases
+   - **[DATASET]** - Super Realistic - This dataset is composed of traces that can represent a common production topology and can be accepted as the main benchmarking dataset, one that represents a wide variety of traces all together
+     - High cardinality field values - Traces with very high variations of field values
+       - Note: Some of the limitation of existing tests is the use of dictionaries which have limit on the type of keys used
+     - Variation not only in the attribute value but also in the number of attributes
 
 ## Appendix C - Parameter Tuning and Design Optimization
 
@@ -1124,21 +1160,21 @@ article [Optimize your applications using Google Vertex AI Vizier](https://cloud
 In this analysis, the function to optimize is the compression ratio for a set of parameters. We will focus on optimizing
 the protocol design for logs (the same approach has been applied for metrics). The parameters explored are:
 
-* compression algorithm (Zlib, Zstd, and Lz4)
-* serialization mode
-  * normalized: resources, instrumentation libraries, metrics, logs, traces, events, and links are mapped in a
-  dedicated
-  RecordBatch. A set of primary and secondary keys are used to recreate the relationships between these different
-  entities.
-  * denormalized: resource, instrumentation library, event, and link fields are replicated for every metrics, logs,
-  and traces.
-* dictionary configuration
-  * min_row_count: The creation of a dictionary will be performed only on columns with more than `min_row_count`
-  elements.
-  * max_card: The creation of a dictionary will be performed only on columns with a cardinality lower than `max_card`.
-  * max_card_ratio: The creation of a dictionary will only be performed on columns with a ratio `card` / `size` <= `max_card_ratio`.
-  * max_sorted: Maximum number of sorted dictionaries (based on cardinality/total_size and avg_data_length).
-* batch_size: Size of the batch before serialization and compression.
+- compression algorithm (Zlib, Zstd, and Lz4)
+- serialization mode
+  - normalized: resources, instrumentation libraries, metrics, logs, traces, events, and links are mapped in a
+    dedicated
+    RecordBatch. A set of primary and secondary keys are used to recreate the relationships between these different
+    entities.
+  - denormalized: resource, instrumentation library, event, and link fields are replicated for every metrics, logs,
+    and traces.
+- dictionary configuration
+  - min_row_count: The creation of a dictionary will be performed only on columns with more than `min_row_count`
+    elements.
+  - max_card: The creation of a dictionary will be performed only on columns with a cardinality lower than `max_card`.
+  - max_card_ratio: The creation of a dictionary will only be performed on columns with a ratio `card` / `size` <= `max_card_ratio`.
+  - max_sorted: Maximum number of sorted dictionaries (based on cardinality/total_size and avg_data_length).
+- batch_size: Size of the batch before serialization and compression.
 
 The following parallel coordinates chart represents the execution of 200 trials selected by Google AI Vizier in order to
 optimize the compression ratio per batch.
@@ -1152,13 +1188,13 @@ parameters for the log system in OTLP Arrow. This is represented by the followin
 
 From this analysis, we can conclude that for the tested data, the best parameters are:
 
-* compression_algorithm -> Zstd
-* serialization_mode -> Denormalized (mode used in the benchmark appendix)
-* min_row_count -> 25 logs
-* max_card -> 255 distinct values
-* max_card_ratio -> 0.22
-* max_sorted -> 13 sorted dictionaries
-* batch size -> 50K logs
+- compression_algorithm -> Zstd
+- serialization_mode -> Denormalized (mode used in the benchmark appendix)
+- min_row_count -> 25 logs
+- max_card -> 255 distinct values
+- max_card_ratio -> 0.22
+- max_sorted -> 13 sorted dictionaries
+- batch size -> 50K logs
 
 ## Appendix D - Schema Examples
 
@@ -1182,10 +1218,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "method",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 0,
@@ -1194,10 +1227,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "remote_address",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 1,
@@ -1211,10 +1241,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "state",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 3,
@@ -1223,10 +1250,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "url",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 4,
@@ -1242,10 +1266,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "name",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 5,
@@ -1254,10 +1275,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "version",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 6,
@@ -1288,10 +1306,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "host",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 7,
@@ -1300,10 +1315,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "instance_id",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 8,
@@ -1312,10 +1324,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "service_name",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 9,
@@ -1351,10 +1360,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "method",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 0,
@@ -1363,10 +1369,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "remote_address",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 1,
@@ -1379,10 +1382,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "url",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 3,
@@ -1398,10 +1398,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "name",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 4,
@@ -1410,10 +1407,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "version",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 5,
@@ -1472,10 +1466,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "host",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 6,
@@ -1484,10 +1475,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "instance_id",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 7,
@@ -1496,10 +1484,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "service_name",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 8,
@@ -1531,10 +1516,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
     {
       "name": "name",
       "data_type": {
-        "Dictionary": [
-          "UInt8",
-          "Utf8"
-        ]
+        "Dictionary": ["UInt8", "Utf8"]
       },
       "nullable": true,
       "dict_id": 17,
@@ -1543,10 +1525,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
     {
       "name": "severity_text",
       "data_type": {
-        "Dictionary": [
-          "UInt8",
-          "Utf8"
-        ]
+        "Dictionary": ["UInt8", "Utf8"]
       },
       "nullable": true,
       "dict_id": 24,
@@ -1563,10 +1542,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "compute.googleapis.com/resource_id",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 0,
@@ -1575,10 +1551,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "compute.googleapis.com/resource_name",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 1,
@@ -1587,10 +1560,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "compute.googleapis.com/resource_type",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 2,
@@ -1599,10 +1569,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "dataflow.googleapis.com/job_id",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 3,
@@ -1611,10 +1578,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "dataflow.googleapis.com/job_name",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 4,
@@ -1623,10 +1587,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "dataflow.googleapis.com/log_type",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 5,
@@ -1635,10 +1596,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "dataflow.googleapis.com/region",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 6,
@@ -1651,10 +1609,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "receiveTimestamp",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 8,
@@ -1670,10 +1625,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "job",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 9,
@@ -1682,10 +1634,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "logger",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 10,
@@ -1698,10 +1647,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "stage",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 12,
@@ -1710,10 +1656,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "step",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 13,
@@ -1730,10 +1673,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "worker",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 16,
@@ -1753,10 +1693,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "job_id",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 18,
@@ -1765,10 +1702,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "job_name",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 19,
@@ -1777,10 +1711,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "project_id",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 20,
@@ -1789,10 +1720,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "region",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 21,
@@ -1801,10 +1729,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "step_id",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 22,
@@ -1813,10 +1738,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "type",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 23,
@@ -1929,10 +1851,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                           "List": {
                             "name": "item",
                             "data_type": {
-                              "Dictionary": [
-                                "UInt8",
-                                "Utf8"
-                              ]
+                              "Dictionary": ["UInt8", "Utf8"]
                             },
                             "nullable": true,
                             "dict_id": 0,
@@ -2010,10 +1929,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
     {
       "name": "body",
       "data_type": {
-        "Dictionary": [
-          "UInt8",
-          "Utf8"
-        ]
+        "Dictionary": ["UInt8", "Utf8"]
       },
       "nullable": true,
       "dict_id": 3,
@@ -2022,10 +1938,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
     {
       "name": "name",
       "data_type": {
-        "Dictionary": [
-          "UInt8",
-          "Utf8"
-        ]
+        "Dictionary": ["UInt8", "Utf8"]
       },
       "nullable": true,
       "dict_id": 4,
@@ -2046,10 +1959,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "instanceId",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 1,
@@ -2058,10 +1968,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
           {
             "name": "receiveTimestamp",
             "data_type": {
-              "Dictionary": [
-                "UInt8",
-                "Utf8"
-              ]
+              "Dictionary": ["UInt8", "Utf8"]
             },
             "nullable": true,
             "dict_id": 2,
@@ -2081,10 +1988,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "configuration_name",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 5,
@@ -2093,10 +1997,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "location",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 6,
@@ -2105,10 +2006,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "project_id",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 7,
@@ -2117,10 +2015,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "revision_name",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 8,
@@ -2129,10 +2024,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "service_name",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 9,
@@ -2141,10 +2033,7 @@ From this analysis, we can conclude that for the tested data, the best parameter
                 {
                   "name": "type",
                   "data_type": {
-                    "Dictionary": [
-                      "UInt8",
-                      "Utf8"
-                    ]
+                    "Dictionary": ["UInt8", "Utf8"]
                   },
                   "nullable": true,
                   "dict_id": 10,
